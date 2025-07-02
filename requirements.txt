@@ -1,0 +1,32 @@
+# MCP微信爬虫依赖包
+
+# MCP框架
+mcp>=1.0.0
+
+# 网页爬取
+selenium>=4.0.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+webdriver-manager>=4.0.0
+
+# 图像处理
+Pillow>=10.0.0
+
+# XML解析
+lxml>=4.9.0
+
+# 异步支持
+aiofiles>=23.0.0
+
+# 日志和调试
+coloredlogs>=15.0.0
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 开发工具（可选）
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
