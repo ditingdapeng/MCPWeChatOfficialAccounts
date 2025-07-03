@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MCP微信公众号文章爬虫客户端示例
+MCP微信爬虫客户端 - 标准实现
 
-演示如何使用MCP客户端与微信爬虫服务器进行交互
+基于MCP标准实现的客户端，包含：
+1. Connect-to-server初始化
+2. MCP服务器的session管理
+3. 实现调用MCP方法处理交互
+4. 实现循环提问和最后退出后关闭session
+5. 运行该客户端的相关代码
 """
 
 import asyncio
 import json
 import logging
-import subprocess
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from mcp.client.session import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
+# 导入MCP客户端相关模块
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 # 配置日志
 logging.basicConfig(
@@ -23,383 +30,400 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class WeixinSpiderClient:
-    """微信爬虫MCP客户端"""
+class MCPWeixinClient:
+    """
+    MCP微信爬虫客户端类
     
-    def __init__(self):
+    实现标准的MCP客户端功能：
+    - 连接到MCP服务器
+    - 管理客户端会话
+    - 调用MCP工具
+    - 处理用户交互
+    """
+    
+    def __init__(self, server_script_path: str):
+        """
+        初始化MCP客户端
+        
+        Args:
+            server_script_path: MCP服务器脚本路径
+        """
+        self.server_script_path = server_script_path
         self.session: Optional[ClientSession] = None
-        self._server_params: Optional[StdioServerParameters] = None
-        self._context_manager = None
-    
-    async def connect(self, server_script_path: str):
-        """连接到MCP服务器"""
+        self.server_params: Optional[StdioServerParameters] = None
+        self.available_tools: List[Dict[str, Any]] = []
+        
+    async def connect_to_server(self) -> bool:
+        """
+        连接到MCP服务器并初始化会话
+        
+        Returns:
+            连接是否成功
+        """
         try:
+            logger.info(f"正在连接到MCP服务器: {self.server_script_path}")
+            
             # 创建服务器参数
-            self._server_params = StdioServerParameters(
+            self.server_params = StdioServerParameters(
                 command="python",
-                args=[server_script_path]
+                args=[self.server_script_path]
             )
             
-            # 启动服务器进程并建立连接
-            self._context_manager = stdio_client(self._server_params)
-            read, write = await self._context_manager.__aenter__()
-            
-            # 创建会话
-            self.session = ClientSession(read, write)
-            logger.info("已连接到MCP微信爬虫服务器")
-            
-            # 初始化会话
-            await self.session.initialize()
-            logger.info("MCP会话初始化完成")
-            
+            # 使用stdio_client连接服务器
+            async with stdio_client(self.server_params) as (read, write):
+                # 创建客户端会话
+                async with ClientSession(read, write) as session:
+                    self.session = session
+                    
+                    # 初始化会话
+                    await self._initialize_session()
+                    
+                    logger.info("成功连接到MCP服务器")
+                    return True
+                    
         except Exception as e:
-            logger.error(f"连接服务器失败: {e}")
-            if self._context_manager:
-                try:
-                    await self._context_manager.__aexit__(None, None, None)
-                except:
-                    pass
+            logger.error(f"连接MCP服务器失败: {e}")
+            return False
+    
+    async def _initialize_session(self):
+        """
+        初始化MCP会话
+        
+        包括：
+        - 初始化协议
+        - 获取可用工具列表
+        - 获取可用资源列表
+        """
+        try:
+            # 初始化协议
+            init_result = await self.session.initialize()
+            logger.info(f"协议初始化成功: {init_result}")
+            
+            # 获取可用工具
+            tools_result = await self.session.list_tools()
+            self.available_tools = tools_result.tools
+            logger.info(f"获取到 {len(self.available_tools)} 个可用工具")
+            
+            # 打印可用工具信息
+            for tool in self.available_tools:
+                logger.info(f"工具: {tool.name} - {tool.description}")
+                
+        except Exception as e:
+            logger.error(f"初始化会话失败: {e}")
             raise
     
-    async def disconnect(self):
-        """断开连接"""
-        if self.session:
-            try:
-                # ClientSession没有close方法，直接设置为None
-                logger.info("已断开MCP服务器连接")
-            except Exception as e:
-                logger.error(f"断开连接失败: {e}")
-            finally:
-                self.session = None
+    async def list_available_tools(self) -> List[Dict[str, Any]]:
+        """
+        列出所有可用的MCP工具
         
-        if self._context_manager:
-            try:
-                await self._context_manager.__aexit__(None, None, None)
-            except Exception as e:
-                logger.error(f"关闭服务器进程失败: {e}")
-            finally:
-                self._context_manager = None
-    
-    async def list_tools(self) -> List[Dict[str, Any]]:
-        """获取可用工具列表"""
+        Returns:
+            工具列表
+        """
         if not self.session:
             raise RuntimeError("未连接到服务器")
         
         try:
-            tools = await self.session.list_tools()
-            return [tool.model_dump() for tool in tools]
+            result = await self.session.list_tools()
+            tools_info = []
+            
+            for tool in result.tools:
+                tool_info = {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.inputSchema
+                }
+                tools_info.append(tool_info)
+            
+            return tools_info
+            
         except Exception as e:
             logger.error(f"获取工具列表失败: {e}")
-            raise
+            return []
     
-    async def crawl_article(self, url: str, download_images: bool = True, custom_filename: Optional[str] = None) -> Dict[str, Any]:
-        """爬取微信文章"""
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        调用MCP工具
+        
+        Args:
+            tool_name: 工具名称
+            arguments: 工具参数
+        
+        Returns:
+            工具调用结果
+        """
         if not self.session:
             raise RuntimeError("未连接到服务器")
         
         try:
-            result = await self.session.call_tool(
-                "crawl_weixin_article",
-                {
-                    "url": url,
-                    "download_images": download_images,
-                    "custom_filename": custom_filename
-                }
-            )
+            logger.info(f"调用工具: {tool_name}，参数: {arguments}")
             
-            # 解析结果
-            if result and len(result) > 0:
-                content = result[0].text if hasattr(result[0], 'text') else str(result[0])
-                try:
-                    # 尝试从文本中提取JSON
-                    if "✅ 文章爬取成功" in content:
-                        json_start = content.find("{") 
-                        if json_start != -1:
-                            json_content = content[json_start:]
-                            return json.loads(json_content)
-                    return {"status": "success", "message": content}
-                except json.JSONDecodeError:
-                    return {"status": "success", "message": content}
+            # 调用工具
+            result = await self.session.call_tool(tool_name, arguments)
+            
+            # 处理结果
+            if result.isError:
+                error_msg = f"工具调用失败: {result.content}"
+                logger.error(error_msg)
+                return {
+                    "status": "error",
+                    "message": error_msg
+                }
             else:
-                return {"status": "error", "message": "未收到响应"}
+                logger.info(f"工具调用成功: {tool_name}")
+                return {
+                    "status": "success",
+                    "result": result.content
+                }
                 
         except Exception as e:
-            logger.error(f"爬取文章失败: {e}")
-            return {"status": "error", "message": str(e)}
+            error_msg = f"调用工具 {tool_name} 时出错: {e}"
+            logger.error(error_msg)
+            return {
+                "status": "error",
+                "message": error_msg
+            }
+    
+    async def crawl_article(self, url: str, download_images: bool = True, custom_filename: str = None) -> Dict[str, Any]:
+        """
+        爬取微信文章
+        
+        Args:
+            url: 文章URL
+            download_images: 是否下载图片
+            custom_filename: 自定义文件名
+        
+        Returns:
+            爬取结果
+        """
+        arguments = {
+            "url": url,
+            "download_images": download_images
+        }
+        
+        if custom_filename:
+            arguments["custom_filename"] = custom_filename
+        
+        return await self.call_tool("crawl_weixin_article", arguments)
     
     async def analyze_article(self, article_data: Dict[str, Any], analysis_type: str = "full") -> Dict[str, Any]:
-        """分析文章内容"""
-        if not self.session:
-            raise RuntimeError("未连接到服务器")
+        """
+        分析文章内容
         
-        try:
-            result = await self.session.call_tool(
-                "analyze_article_content",
-                {
-                    "article_data": article_data,
-                    "analysis_type": analysis_type
-                }
-            )
-            
-            if result and len(result) > 0:
-                content = result[0].text if hasattr(result[0], 'text') else str(result[0])
-                try:
-                    # 尝试从文本中提取JSON
-                    if "📊 文章分析结果" in content:
-                        json_start = content.find("{")
-                        if json_start != -1:
-                            json_content = content[json_start:]
-                            return json.loads(json_content)
-                    return {"status": "success", "message": content}
-                except json.JSONDecodeError:
-                    return {"status": "success", "message": content}
-            else:
-                return {"status": "error", "message": "未收到响应"}
-                
-        except Exception as e:
-            logger.error(f"分析文章失败: {e}")
-            return {"status": "error", "message": str(e)}
+        Args:
+            article_data: 文章数据
+            analysis_type: 分析类型
+        
+        Returns:
+            分析结果
+        """
+        arguments = {
+            "article_data": article_data,
+            "analysis_type": analysis_type
+        }
+        
+        return await self.call_tool("analyze_article_content", arguments)
     
     async def get_statistics(self, article_data: Dict[str, Any]) -> Dict[str, Any]:
-        """获取文章统计信息"""
-        if not self.session:
-            raise RuntimeError("未连接到服务器")
+        """
+        获取文章统计信息
         
-        try:
-            result = await self.session.call_tool(
-                "get_article_statistics",
-                {
-                    "article_data": article_data
-                }
-            )
-            
-            if result and len(result) > 0:
-                content = result[0].text if hasattr(result[0], 'text') else str(result[0])
-                try:
-                    # 尝试从文本中提取JSON
-                    if "📈 文章统计信息" in content:
-                        json_start = content.find("{")
-                        if json_start != -1:
-                            json_content = content[json_start:]
-                            return json.loads(json_content)
-                    return {"status": "success", "message": content}
-                except json.JSONDecodeError:
-                    return {"status": "success", "message": content}
-            else:
-                return {"status": "error", "message": "未收到响应"}
+        Args:
+            article_data: 文章数据
+        
+        Returns:
+            统计信息
+        """
+        arguments = {
+            "article_data": article_data
+        }
+        
+        return await self.call_tool("get_article_statistics", arguments)
+    
+    async def interactive_session(self):
+        """
+        交互式会话
+        
+        实现循环提问和处理用户输入
+        """
+        print("\n=== MCP微信爬虫客户端 ===")
+        print("输入 'help' 查看帮助信息")
+        print("输入 'quit' 或 'exit' 退出程序")
+        print("="*40)
+        
+        while True:
+            try:
+                # 获取用户输入
+                user_input = input("\n请输入命令: ").strip()
                 
-        except Exception as e:
-            logger.error(f"获取统计信息失败: {e}")
-            return {"status": "error", "message": str(e)}
-    
-    async def list_resources(self) -> List[Dict[str, Any]]:
-        """获取可用资源列表"""
-        if not self.session:
-            raise RuntimeError("未连接到服务器")
-        
-        try:
-            resources = await self.session.list_resources()
-            return [resource.model_dump() for resource in resources]
-        except Exception as e:
-            logger.error(f"获取资源列表失败: {e}")
-            raise
-    
-    async def read_resource(self, uri: str) -> Dict[str, Any]:
-        """读取资源内容"""
-        if not self.session:
-            raise RuntimeError("未连接到服务器")
-        
-        try:
-            content = await self.session.read_resource(uri)
-            return json.loads(content)
-        except Exception as e:
-            logger.error(f"读取资源失败 {uri}: {e}")
-            raise
-
-
-async def demo_usage():
-    """演示客户端使用方法"""
-    client = WeixinSpiderClient()
-    
-    try:
-        # 连接到服务器（需要指定服务器脚本路径）
-        server_script = "/Users/dapeng/Code/study/MCP-Study/mcp-weixin/MCPWeiXin/src/mcp_weixin_spider/server.py"
-        await client.connect(server_script)
-        
-        # 获取可用工具
-        print("\n=== 可用工具 ===")
-        tools = await client.list_tools()
-        for tool in tools:
-            print(f"- {tool['name']}: {tool['description']}")
-        
-        # 获取可用资源
-        print("\n=== 可用资源 ===")
-        resources = await client.list_resources()
-        for resource in resources:
-            print(f"- {resource['name']}: {resource['description']}")
-        
-        # 示例：爬取文章（需要提供真实的微信文章URL）
-        # test_url = "https://mp.weixin.qq.com/s/example"
-        # print(f"\n=== 爬取文章: {test_url} ===")
-        # result = await client.crawl_article(test_url)
-        # print(json.dumps(result, ensure_ascii=False, indent=2))
-        
-        # 读取最近文章资源
-        print("\n=== 最近文章 ===")
-        try:
-            recent_articles = await client.read_resource("weixin://articles/recent")
-            print(json.dumps(recent_articles, ensure_ascii=False, indent=2))
-        except Exception as e:
-            print(f"读取最近文章失败: {e}")
-        
-        # 读取爬虫配置
-        print("\n=== 爬虫配置 ===")
-        try:
-            config = await client.read_resource("weixin://config/spider")
-            print(json.dumps(config, ensure_ascii=False, indent=2))
-        except Exception as e:
-            print(f"读取配置失败: {e}")
-        
-    except Exception as e:
-        logger.error(f"演示过程中出错: {e}")
-    finally:
-        await client.disconnect()
-
-
-class InteractiveClient:
-    """交互式客户端"""
-    
-    def __init__(self):
-        self.client = WeixinSpiderClient()
-        self.connected = False
-    
-    async def start(self):
-        """启动交互式客户端"""
-        print("🕷️ MCP微信爬虫客户端")
-        print("输入 'help' 查看可用命令，输入 'quit' 退出")
-        
-        try:
-            # 连接服务器
-            server_script = "/Users/dapeng/Code/study/MCP-Study/mcp-weixin/MCPWeiXin/src/mcp_weixin_spider/server.py"
-            await self.client.connect(server_script)
-            self.connected = True
-            print("✅ 已连接到MCP服务器")
-            
-            # 交互循环
-            while True:
-                try:
-                    command = input("\n> ").strip()
-                    if not command:
-                        continue
-                    
-                    if command.lower() in ['quit', 'exit', 'q']:
-                        break
-                    elif command.lower() == 'help':
-                        await self.show_help()
-                    elif command.lower() == 'tools':
-                        await self.list_tools()
-                    elif command.lower() == 'resources':
-                        await self.list_resources()
-                    elif command.startswith('crawl '):
-                        url = command[6:].strip()
-                        await self.crawl_article(url)
-                    elif command.startswith('recent'):
-                        await self.show_recent_articles()
-                    elif command.startswith('config'):
-                        await self.show_config()
-                    else:
-                        print("❌ 未知命令，输入 'help' 查看帮助")
-                        
-                except KeyboardInterrupt:
-                    print("\n收到中断信号...")
+                if not user_input:
+                    continue
+                
+                # 处理退出命令
+                if user_input.lower() in ['quit', 'exit', 'q']:
+                    print("正在退出...")
                     break
-                except Exception as e:
-                    print(f"❌ 执行命令时出错: {e}")
-        
-        except Exception as e:
-            print(f"❌ 启动客户端失败: {e}")
-        finally:
-            if self.connected:
-                await self.client.disconnect()
-                print("👋 已断开连接")
+                
+                # 处理帮助命令
+                elif user_input.lower() in ['help', 'h']:
+                    await self._show_help()
+                
+                # 处理工具列表命令
+                elif user_input.lower() in ['tools', 'list']:
+                    await self._show_tools()
+                
+                # 处理爬取命令
+                elif user_input.lower().startswith('crawl '):
+                    url = user_input[6:].strip()
+                    if url:
+                        await self._handle_crawl_command(url)
+                    else:
+                        print("请提供文章URL")
+                
+                # 处理未知命令
+                else:
+                    print(f"未知命令: {user_input}")
+                    print("输入 'help' 查看帮助信息")
+                    
+            except KeyboardInterrupt:
+                print("\n收到中断信号，正在退出...")
+                break
+            except Exception as e:
+                logger.error(f"处理用户输入时出错: {e}")
+                print(f"出错: {e}")
     
-    async def show_help(self):
+    async def _show_help(self):
         """显示帮助信息"""
         help_text = """
-📖 可用命令：
-  help          - 显示此帮助信息
-  tools         - 列出可用工具
-  resources     - 列出可用资源
-  crawl <url>   - 爬取指定URL的微信文章
-  recent        - 显示最近爬取的文章
-  config        - 显示爬虫配置
-  quit/exit/q   - 退出客户端
+可用命令：
+  help, h          - 显示此帮助信息
+  tools, list      - 显示可用工具列表
+  crawl <URL>      - 爬取指定URL的微信文章
+  quit, exit, q    - 退出程序
 
-📝 示例：
+示例：
   crawl https://mp.weixin.qq.com/s/example
-        """
+"""
         print(help_text)
     
-    async def list_tools(self):
-        """列出可用工具"""
+    async def _show_tools(self):
+        """显示可用工具"""
         try:
-            tools = await self.client.list_tools()
-            print("\n🔧 可用工具：")
-            for tool in tools:
-                print(f"  • {tool['name']}: {tool['description']}")
+            tools = await self.list_available_tools()
+            print("\n可用工具：")
+            for i, tool in enumerate(tools, 1):
+                print(f"{i}. {tool['name']}")
+                print(f"   描述: {tool['description']}")
+                print()
         except Exception as e:
-            print(f"❌ 获取工具列表失败: {e}")
+            print(f"获取工具列表失败: {e}")
     
-    async def list_resources(self):
-        """列出可用资源"""
+    async def _handle_crawl_command(self, url: str):
+        """处理爬取命令"""
         try:
-            resources = await self.client.list_resources()
-            print("\n📚 可用资源：")
-            for resource in resources:
-                print(f"  • {resource['name']}: {resource['description']}")
+            print(f"正在爬取文章: {url}")
+            result = await self.crawl_article(url)
+            
+            if result["status"] == "success":
+                print("爬取成功！")
+                # 解析结果
+                if isinstance(result["result"], list) and result["result"]:
+                    content = result["result"][0].get("content", "")
+                    if content:
+                        try:
+                            article_info = json.loads(content)
+                            if "article" in article_info:
+                                article = article_info["article"]
+                                print(f"标题: {article.get('title', 'N/A')}")
+                                print(f"作者: {article.get('author', 'N/A')}")
+                                print(f"发布时间: {article.get('publish_time', 'N/A')}")
+                                print(f"内容长度: {article.get('content_length', 0)} 字符")
+                                print(f"图片数量: {article.get('images_count', 0)}")
+                        except json.JSONDecodeError:
+                            print("结果解析失败")
+            else:
+                print(f"爬取失败: {result.get('message', '未知错误')}")
+                
         except Exception as e:
-            print(f"❌ 获取资源列表失败: {e}")
+            print(f"爬取过程中出错: {e}")
     
-    async def crawl_article(self, url: str):
-        """爬取文章"""
-        if not url:
-            print("❌ 请提供文章URL")
-            return
+    async def close_session(self):
+        """
+        关闭会话和连接
+        """
+        try:
+            if self.session:
+                # 注意：在实际的stdio_client上下文中，session会自动关闭
+                logger.info("会话已关闭")
+                self.session = None
+        except Exception as e:
+            logger.error(f"关闭会话时出错: {e}")
+
+
+async def run_client(server_script_path: str):
+    """
+    运行MCP客户端
+    
+    Args:
+        server_script_path: 服务器脚本路径
+    """
+    client = MCPWeixinClient(server_script_path)
+    
+    try:
+        # 连接到服务器
+        logger.info("正在启动MCP客户端...")
         
-        print(f"🕷️ 开始爬取: {url}")
-        try:
-            result = await self.client.crawl_article(url)
-            print("\n📄 爬取结果：")
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        except Exception as e:
-            print(f"❌ 爬取失败: {e}")
+        # 创建服务器参数
+        server_params = StdioServerParameters(
+            command="python",
+            args=[server_script_path]
+        )
+        
+        # 使用stdio_client连接服务器
+        async with stdio_client(server_params) as (read, write):
+            # 创建客户端会话
+            async with ClientSession(read, write) as session:
+                client.session = session
+                
+                # 初始化会话
+                await client._initialize_session()
+                
+                # 开始交互式会话
+                await client.interactive_session()
+                
+    except Exception as e:
+        logger.error(f"客户端运行出错: {e}")
+    finally:
+        # 关闭会话
+        await client.close_session()
+        logger.info("MCP客户端已退出")
+
+
+def main():
+    """
+    主函数
+    """
+    # 默认服务器脚本路径
+    server_script = "server.py"
     
-    async def show_recent_articles(self):
-        """显示最近文章"""
-        try:
-            recent = await self.client.read_resource("weixin://articles/recent")
-            print("\n📰 最近爬取的文章：")
-            print(json.dumps(recent, ensure_ascii=False, indent=2))
-        except Exception as e:
-            print(f"❌ 获取最近文章失败: {e}")
+    # 检查命令行参数
+    if len(sys.argv) > 1:
+        server_script = sys.argv[1]
     
-    async def show_config(self):
-        """显示配置"""
-        try:
-            config = await self.client.read_resource("weixin://config/spider")
-            print("\n⚙️ 爬虫配置：")
-            print(json.dumps(config, ensure_ascii=False, indent=2))
-        except Exception as e:
-            print(f"❌ 获取配置失败: {e}")
+    # 检查服务器脚本是否存在
+    if not Path(server_script).exists():
+        print(f"错误: 服务器脚本 '{server_script}' 不存在")
+        print("用法: python client_standard.py [server_script_path]")
+        sys.exit(1)
+    
+    try:
+        # 运行客户端
+        asyncio.run(run_client(server_script))
+    except KeyboardInterrupt:
+        print("\n程序被用户中断")
+    except Exception as e:
+        logger.error(f"程序运行出错: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
-        # 交互式模式
-        client = InteractiveClient()
-        asyncio.run(client.start())
-    else:
-        # 演示模式
-        asyncio.run(demo_usage())
+    main()

@@ -99,33 +99,77 @@ class WeixinSpiderWithImages:
             options = Options()
             
             if headless:
-                options.add_argument('--headless')
+                options.add_argument('--headless')  # 使用传统headless模式
                 logger.info("使用无头模式")
             
-            # 基本设置
+            # 基本设置 - 针对版本兼容性和渲染器连接问题优化
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--disable-extensions')
             options.add_argument('--disable-gpu')
+            options.add_argument('--disable-extensions')
+            options.add_argument('--disable-logging')
             options.add_argument('--disable-web-security')
             options.add_argument('--allow-running-insecure-content')
-            options.add_argument('--disable-logging')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--remote-debugging-port=9222')
+            options.add_argument('--disable-features=VizDisplayCompositor')
+            options.add_argument('--disable-features=TranslateUI')
+            options.add_argument('--disable-background-timer-throttling')
+            options.add_argument('--disable-backgrounding-occluded-windows')
+            options.add_argument('--disable-renderer-backgrounding')
+            options.add_argument('--disable-ipc-flooding-protection')
+            options.add_argument('--disable-hang-monitor')
+            options.add_argument('--disable-client-side-phishing-detection')
+            options.add_argument('--disable-popup-blocking')
+            options.add_argument('--disable-prompt-on-repost')
+            options.add_argument('--disable-sync')
+            options.add_argument('--no-first-run')
+            options.add_argument('--disable-default-apps')
+            options.add_argument('--disable-component-update')
+            options.add_argument('--disable-background-networking')
+            options.add_argument('--disable-component-extensions-with-background-pages')
+            options.add_argument('--disable-blink-features=AutomationControlled')
             
-            # 设置用户代理
-            options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            # 解决渲染器连接问题的关键参数
+            options.add_argument('--single-process')  # 使用单进程模式
+            options.add_argument('--disable-gpu-sandbox')
+            options.add_argument('--disable-software-rasterizer')
+            options.add_argument('--remote-debugging-port=0')  # 禁用远程调试端口
+            options.add_argument('--disable-dev-tools')
+            
+            # 内存和性能优化
+            options.add_argument('--memory-pressure-off')
+            options.add_argument('--max_old_space_size=4096')
+            
+            # 设置用户代理 - 更新到最新版本
+            options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36')
             
             # 排除自动化标识
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
             options.add_experimental_option('useAutomationExtension', False)
+            
+            # 设置prefs以避免各种弹窗
+            prefs = {
+                "profile.default_content_setting_values": {
+                    "notifications": 2,
+                    "geolocation": 2,
+                    "media_stream": 2,
+                },
+                "profile.default_content_settings.popups": 0,
+                "profile.managed_default_content_settings.images": 2 if not self.download_images else 1
+            }
+            options.add_experimental_option("prefs", prefs)
             
             # 优先尝试使用系统ChromeDriver
             try:
                 logger.info("尝试使用系统ChromeDriver...")
-                self.driver = webdriver.Chrome(options=options)
-                logger.info("使用系统ChromeDriver成功初始化")
+                # 检查ChromeDriver路径
+                chromedriver_path = shutil.which('chromedriver')
+                if chromedriver_path:
+                    logger.info(f"找到ChromeDriver路径: {chromedriver_path}")
+                    service = Service(chromedriver_path)
+                    self.driver = webdriver.Chrome(service=service, options=options)
+                    logger.info("使用系统ChromeDriver成功初始化")
+                else:
+                    raise Exception("未找到系统ChromeDriver")
             except Exception as system_error:
                 logger.warning(f"系统ChromeDriver失败: {system_error}")
                 try:
@@ -136,13 +180,28 @@ class WeixinSpiderWithImages:
                     logger.info("使用webdriver-manager成功初始化ChromeDriver")
                 except Exception as wdm_error:
                     logger.error(f"webdriver-manager失败: {wdm_error}")
-                    raise RuntimeError(f"无法下载兼容的ChromeDriver: {wdm_error}")
+                    # 最后尝试不指定service
+                    try:
+                        logger.info("尝试使用默认ChromeDriver配置...")
+                        self.driver = webdriver.Chrome(options=options)
+                        logger.info("使用默认配置成功初始化ChromeDriver")
+                    except Exception as default_error:
+                        logger.error(f"默认配置也失败: {default_error}")
+                        raise RuntimeError(f"所有ChromeDriver初始化方法都失败: {default_error}")
             
             # 执行脚本隐藏webdriver属性
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            try:
+                self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                self.driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
+                self.driver.execute_script("Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']})")
+            except Exception as script_error:
+                logger.warning(f"执行隐藏脚本失败: {script_error}")
             
             # 设置窗口大小
-            self.driver.set_window_size(1920, 1080)
+            try:
+                self.driver.set_window_size(1920, 1080)
+            except Exception as window_error:
+                logger.warning(f"设置窗口大小失败: {window_error}")
             
             logger.info("Chrome浏览器驱动设置完成")
             
@@ -618,8 +677,10 @@ class WeixinSpiderWithImages:
                 logger.error(f"关闭网络会话时出错: {str(e)}")
     
     def __del__(self):
-        """析构函数"""
-        self.close()
+        """析构函数 - 不自动关闭驱动，避免意外关闭"""
+        # 注释掉自动关闭，避免在不合适的时机关闭驱动
+        # self.close()
+        pass
 
 def check_dependencies():
     """检查依赖包是否安装"""
