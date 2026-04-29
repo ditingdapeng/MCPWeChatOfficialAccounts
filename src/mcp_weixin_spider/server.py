@@ -130,6 +130,8 @@ def crawl_weixin_article(url: str, download_images: bool = True, custom_filename
         
         if success:
             # 构建返回结果
+            content_text = article_data.get("content_text", "")
+            images = article_data.get("images", [])
             result = {
                 "status": "success",
                 "message": "文章爬取成功",
@@ -138,9 +140,11 @@ def crawl_weixin_article(url: str, download_images: bool = True, custom_filename
                     "author": article_data.get("author", ""),
                     "publish_time": article_data.get("publish_time", ""),
                     "url": article_data.get("url", ""),
-                    "content_length": len(article_data.get("content", "")),
-                    "images_count": len(article_data.get("images", [])),
-                    "crawl_time": article_data.get("crawl_time", "")
+                    "content": content_text,
+                    "content_length": len(content_text),
+                    "images_count": len(images),
+                    "crawl_time": article_data.get("crawl_time", ""),
+                    "images": images if download_images else []
                 },
                 "files_saved": {
                     "json": True,
@@ -195,7 +199,7 @@ def analyze_article_content(article_data: dict, analysis_type: str = "full") -> 
         result = {"analysis_type": analysis_type}
         
         if analysis_type in ["summary", "full"]:
-            content = article_data.get("content", "")
+            content = article_data.get("content_text", "")
             result["summary"] = {
                 "title": article_data.get("title", ""),
                 "author": article_data.get("author", ""),
@@ -206,7 +210,7 @@ def analyze_article_content(article_data: dict, analysis_type: str = "full") -> 
             }
         
         if analysis_type in ["keywords", "full"]:
-            content = article_data.get("content", "")
+            content = article_data.get("content_text", "")
             # 简单的关键词提取
             words = content.split()
             word_freq = {}
