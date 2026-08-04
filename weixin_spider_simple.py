@@ -45,6 +45,7 @@ class WeixinSpiderWithImages:
         :param download_images: 是否下载图片
         """
         self.driver = None
+        self.headless = headless
         self.wait_time = wait_time
         self.download_images = download_images
         self.session = requests.Session()
@@ -99,7 +100,7 @@ class WeixinSpiderWithImages:
             options = Options()
             
             if headless:
-                options.add_argument('--headless')  # 使用传统headless模式
+                options.add_argument('--headless=new')  # 使用新版headless模式，兼容Chrome 112+
                 logger.info("使用无头模式")
             
             # 基本设置 - 针对版本兼容性和渲染器连接问题优化
@@ -129,11 +130,8 @@ class WeixinSpiderWithImages:
             options.add_argument('--disable-blink-features=AutomationControlled')
             
             # 解决渲染器连接问题的关键参数
-            options.add_argument('--single-process')  # 使用单进程模式
             options.add_argument('--disable-gpu-sandbox')
             options.add_argument('--disable-software-rasterizer')
-            options.add_argument('--remote-debugging-port=0')  # 禁用远程调试端口
-            options.add_argument('--disable-dev-tools')
             
             # 内存和性能优化
             options.add_argument('--memory-pressure-off')
@@ -204,22 +202,43 @@ class WeixinSpiderWithImages:
                 logger.warning(f"设置窗口大小失败: {window_error}")
             
             logger.info("Chrome浏览器驱动设置完成")
-            
+
         except Exception as e:
             logger.error(f"设置浏览器驱动失败: {str(e)}")
             # 提供备用方案
             self.driver = None
             raise RuntimeError(f"无法初始化Chrome浏览器驱动: {e}")
+
+    def _rebuild_driver(self):
+        """重建浏览器驱动（session失效时调用）"""
+        logger.info("正在重建Chrome浏览器驱动...")
+        try:
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.driver = None
+        self.setup_driver(headless=self.headless)
     
     def crawl_article_by_url(self, url, retry_times=3):
         """通过URL抓取文章内容，支持重试"""
         if not self.driver:
             raise RuntimeError("浏览器驱动未初始化")
-            
+
         for attempt in range(retry_times):
             try:
                 logger.info(f"第 {attempt + 1} 次尝试访问文章: {url}")
-                
+
+                # 检查session是否有效，无效则重建driver
+                try:
+                    self.driver.current_url
+                except Exception:
+                    logger.warning("检测到浏览器session失效，正在重建驱动...")
+                    self._rebuild_driver()
+
                 # 访问页面
                 self.driver.get(url)
                 
@@ -250,7 +269,19 @@ class WeixinSpiderWithImages:
                     logger.warning(f"第 {attempt + 1} 次尝试未能获取完整文章内容")
                     
             except Exception as e:
+                error_msg = str(e).lower()
                 logger.error(f"第 {attempt + 1} 次尝试失败: {str(e)}")
+                # 如果是session/browser崩溃相关错误，重建driver
+                if any(keyword in error_msg for keyword in [
+                    'invalid session', 'session deleted', 'no such window',
+                    'target window already closed', 'browser has closed',
+                    'unable to connect', 'chrome not reachable'
+                ]):
+                    logger.warning("浏览器崩溃，尝试重建驱动...")
+                    try:
+                        self._rebuild_driver()
+                    except Exception as rebuild_err:
+                        logger.error(f"重建驱动失败: {rebuild_err}")
                 if attempt == retry_times - 1:
                     raise
                 time.sleep(2)
